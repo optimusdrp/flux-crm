@@ -14,19 +14,26 @@ export async function authenticateRequest(req: NextRequest): Promise<AuthContext
   const authHeader = req.headers.get('authorization');
   const token = extractBearerToken(authHeader);
 
+  // Correção de auditoria (prioridade crítica #1): antes, a ausência de
+  // token era tratada como "ambiente local de teste" e autenticava
+  // automaticamente como o primeiro usuário do banco (db.users[0],
+  // tipicamente o Administrador) — um bypass de autenticação real,
+  // confirmado em produção via chamadas HTTP sem nenhum header
+  // Authorization (GET/POST em /api/patients, /api/audit-logs
+  // devolvendo dados reais de pacientes e logs sem nenhuma credencial).
+  //
+  // Toda rota de API deste projeto depende deste único helper para
+  // autenticação — não existe um middleware.ts central — então a
+  // ausência de token precisa ser rejeitada aqui, sempre, sem exceção
+  // implícita. Um ambiente de desenvolvimento que realmente precise
+  // pular login deve fazer isso de forma explícita (ex.: um usuário de
+  // teste com credenciais próprias), nunca como comportamento padrão do
+  // helper de autenticação.
   if (!token) {
-    // Se estiver em ambiente local sem token explícito, podemos usar o admin como fallback padrão
-    const db = getDatabase();
-    const defaultUser = db.users[0];
     return {
-      authenticated: true,
-      user: {
-        id: defaultUser.id,
-        email: defaultUser.email,
-        role: defaultUser.role,
-        clinicId: defaultUser.clinicId,
-        name: defaultUser.name,
-      },
+      authenticated: false,
+      error: 'Não autenticado. Informe um token de acesso válido no cabeçalho Authorization.',
+      status: 401,
     };
   }
 

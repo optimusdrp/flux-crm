@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/db/store';
 import { signToken } from '@/lib/security/jwt';
 import { validateFirestoreLogin } from '@/lib/db/firestore';
+import { createFirebaseCustomToken } from '@/lib/security/firebaseAdmin';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,6 +119,20 @@ export async function POST(req: NextRequest) {
       name: firestoreUser.name,
     });
 
+    // 5.1 Integração de Firebase Authentication (correção de auditoria
+    // #4 — regras do Firestore): gera um custom token do Firebase para
+    // este usuário, agora que a senha já foi validada por
+    // verifyPassword() acima. O front-end troca esse token por uma
+    // sessão real do Firebase via signInWithCustomToken(), o que
+    // preenche request.auth nas firestore.rules — sem isso, as regras
+    // nunca conseguem diferenciar um usuário autenticado de um
+    // anônimo. "Melhor esforço": se a Service Account não estiver
+    // configurada neste ambiente, firebaseToken vem null e o login
+    // pelo JWT próprio continua funcionando normalmente — só a proteção
+    // extra do Firestore fica indisponível até a Service Account ser
+    // configurada.
+    const firebaseToken = await createFirebaseCustomToken(firestoreUser.id, firestoreUser.clinicId);
+
     // 6. Registra log imutável de auditoria LGPD
     db.auditLogs.unshift({
       id: `aud_${Date.now()}`,
@@ -145,6 +160,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       token,
+      firebaseToken,
       user: safeUser,
       clinic,
       subscription,

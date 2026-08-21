@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/db/store';
 import { ChatMessage, Patient } from '@/lib/types';
 import { routeClinicalTriage } from '@/lib/ai/router';
+import { verifyWhatsAppWebhookRequest } from '@/lib/security/webhookAuth';
 
 // Normaliza números de telefone (remove caracteres especiais para comparação)
 function normalizePhone(phone: string): string {
@@ -15,7 +16,14 @@ export async function GET(req: NextRequest) {
   const token = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  if (mode === 'subscribe' && token === 'cardiovida_secret_token') {
+  // Correção de auditoria (prioridade alta #5): o token de verificação
+  // estava fixo no código-fonte ('cardiovida_secret_token') — movido
+  // para variável de ambiente, consistente com o segredo usado na
+  // validação de assinatura do POST abaixo (mesmo valor,
+  // WHATSAPP_WEBHOOK_SECRET, serve para os dois propósitos).
+  const expectedToken = process.env.WHATSAPP_WEBHOOK_SECRET;
+
+  if (expectedToken && mode === 'subscribe' && token === expectedToken) {
     return new NextResponse(challenge || 'ok', { status: 200 });
   }
 
@@ -29,7 +37,27 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // Correção de auditoria (prioridade alta #5): o corpo é lido como
+    // texto bruto ANTES de qualquer parsing — a validação de assinatura
+    // HMAC (formato Meta) precisa do texto exato recebido; fazer
+    // JSON.parse e depois reserializar poderia mudar espaçamento/ordem
+    // de chaves e invalidar uma assinatura correta.
+    const rawBody = await req.text();
+
+    const isVerified = verifyWhatsAppWebhookRequest(rawBody, {
+      metaSignature: req.headers.get('x-hub-signature-256'),
+      sharedSecret: req.headers.get('x-webhook-secret'),
+    });
+
+    if (!isVerified) {
+      console.warn('[Webhook WhatsApp] Requisição rejeitada — assinatura/segredo ausente ou inválido.');
+      return NextResponse.json(
+        { error: 'Assinatura ou segredo de webhook ausente ou inválido.' },
+        { status: 401 }
+      );
+    }
+
+    const body = JSON.parse(rawBody);
     const db = getDatabase();
 
     // Extrair dados flexivelmente (suporta formato direto, whatsapp-web.js event, ou Meta Cloud API)

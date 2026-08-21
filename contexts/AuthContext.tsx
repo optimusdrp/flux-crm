@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { User, Clinic, Subscription, RolePermission, Role, TabId, SensitiveAction } from '@/lib/types';
 import { apiService } from '@/lib/services/api';
 import { useToast } from './ToastContext';
+import { syncFirebaseAuthSession, clearFirebaseAuthSession } from '@/lib/security/firebaseClient';
 
 interface AuthContextType {
   user: User | null;
@@ -49,8 +50,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isTrialExpired, setIsTrialExpired] = useState<boolean>(false);
   const { info, error, warning } = useToast();
 
-  const handleLoginSuccess = (data: {
+  const handleLoginSuccess = async (data: {
     token: string;
+    firebaseToken?: string | null;
     user: User;
     clinic: Clinic;
     subscription: Subscription;
@@ -62,6 +64,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSubscription(data.subscription);
     setPermissions(data.permissions);
     setIsTrialExpired(false);
+
+    // Integração de Firebase Authentication (correção de auditoria #4):
+    // troca o custom token gerado pelo backend por uma sessão real do
+    // Firebase — não bloqueia o login se falhar ou se a Service Account
+    // ainda não estiver configurada (ver syncFirebaseAuthSession).
+    await syncFirebaseAuthSession(data.firebaseToken ?? null);
 
     // Aviso se faltar menos de 2 dias
     if (
@@ -79,7 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const data = await apiService.login(email, password);
-      handleLoginSuccess(data);
+      await handleLoginSuccess(data);
       info('Sessão iniciada', `Bem-vindo(a), ${data.user.name} (${data.user.role.toUpperCase()})`);
     } catch (err: any) {
       if (err.errorCode === 'TRIAL_EXPIRED' || err.message?.includes('expirou')) {
@@ -105,7 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const data = await apiService.registerTrial(trialData);
-      handleLoginSuccess(data);
+      await handleLoginSuccess(data);
       info('Trial Ativado', `Bem-vindo(a), ${data.user.name}! Seu teste gratuito de 7 dias está ativo.`);
     } catch (err: any) {
       error('Erro no cadastro', err.message || 'Falha ao registrar clínica.');
@@ -121,6 +129,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setClinic(null);
     setSubscription(null);
     setPermissions(null);
+    // Correção de auditoria #4: encerra também a sessão do Firebase,
+    // para não deixar request.auth preenchido no browser depois que o
+    // usuário já saiu do MediFlux (ver lib/security/firebaseClient.ts).
+    void clearFirebaseAuthSession();
   }, []);
 
   const switchRole = async (role: Role) => {

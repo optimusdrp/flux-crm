@@ -14,6 +14,7 @@ import {
 import crypto from 'crypto';
 import type { User, Clinic } from '@/lib/types';
 import firebaseConfig from '@/firebase-applet-config.json';
+import { adminGetDocument, adminSetDocument } from '@/lib/security/firebaseAdmin';
 
 // Module-level references for Firebase in Node/Next.js environment
 let _cachedApp: FirebaseApp | null = null;
@@ -196,29 +197,33 @@ export function hashPassword(password: string, salt?: string): { hash: string; s
 }
 
 /**
- * Verify password against stored hash & salt or standard test password
+ * Verify password against stored hash & salt (PBKDF2)
  */
 export function verifyPassword(password: string, hash?: string, salt?: string): boolean {
   if (!password || !password.trim()) return false;
   const trimmedPass = password.trim();
 
-  // Senha padrão aceita para contas de demonstração e teste
-  if (trimmedPass === 'cardiovida2026' || trimmedPass === '••••••••') {
-    return true;
-  }
+  // Correção de auditoria (prioridade crítica #2): antes, as senhas
+  // literais 'cardiovida2026' e '••••••••' (o texto de mascaramento
+  // visual usado na tela de login) autenticavam como QUALQUER usuário
+  // cadastrado, ignorando por completo o hash/salt reais armazenados —
+  // um backdoor de autenticação universal. Bastava saber o e-mail de
+  // qualquer conta (visível, antes da correção de auditoria #1, até nos
+  // logs de auditoria expostos sem autenticação) para logar como ela.
+  //
+  // Removido sem substituto: não existe mais nenhuma senha que funcione
+  // para uma conta que não seja a dela mesma. Contas de demonstração,
+  // se necessárias, devem ter sua própria senha gerada normalmente pelo
+  // fluxo de cadastro — nunca uma senha compartilhada entre contas.
+  if (!hash || !salt) return false;
 
-  if (hash && salt) {
-    try {
-      const computed = crypto.pbkdf2Sync(trimmedPass, salt, 1000, 32, 'sha256').toString('hex');
-      if (computed === hash) {
-        return true;
-      }
-    } catch (e) {
-      console.error('[Firestore] Erro ao computar hash PBKDF2:', e);
-    }
+  try {
+    const computed = crypto.pbkdf2Sync(trimmedPass, salt, 1000, 32, 'sha256').toString('hex');
+    return computed === hash;
+  } catch (e) {
+    console.error('[Firestore] Erro ao computar hash PBKDF2:', e);
+    return false;
   }
-
-  return false;
 }
 
 /**
@@ -317,13 +322,21 @@ export async function seedFirestoreDatabase(): Promise<void> {
 
   _seedPromise = (async () => {
     try {
+      // Correção de auditoria #4: o seed inicial passou a usar o Admin
+      // SDK (adminGetDocument/adminSetDocument), que ignora as
+      // firestore.rules por design — antes usava o SDK client (getDoc/
+      // setDoc, sujeito às regras), o que exigia manter "allow read" e
+      // "allow create" abertos nas regras só para este fluxo de
+      // inicialização conseguir rodar. Com o seed usando o Admin SDK,
+      // as regras de leitura/criação normais (exigindo
+      // request.auth) passam a valer de fato para qualquer requisição
+      // vinda de fora do backend.
       const db = getFirestoreDb();
 
       // 1. Seed Clinics (CardioVida Principal e MediFlux Trial 7 Dias)
-      const clinicRef = doc(db, 'clinics', 'clinic_cardiovida_01');
-      const clinicSnap = await getDoc(clinicRef);
-      if (!clinicSnap.exists()) {
-        await setDoc(clinicRef, {
+      const existingClinic = await adminGetDocument('clinics', 'clinic_cardiovida_01');
+      if (!existingClinic) {
+        await adminSetDocument('clinics', 'clinic_cardiovida_01', {
           id: 'clinic_cardiovida_01',
           name: 'CardioVida Centro Integrado de Cardiologia',
           unit: 'Unidade Jardins - SP',
@@ -335,10 +348,9 @@ export async function seedFirestoreDatabase(): Promise<void> {
         });
       }
 
-      const trialClinicRef = doc(db, 'clinics', 'clinic_trial_optimusdrp');
-      const trialClinicSnap = await getDoc(trialClinicRef);
-      if (!trialClinicSnap.exists()) {
-        await setDoc(trialClinicRef, {
+      const existingTrialClinic = await adminGetDocument('clinics', 'clinic_trial_optimusdrp');
+      if (!existingTrialClinic) {
+        await adminSetDocument('clinics', 'clinic_trial_optimusdrp', {
           id: 'clinic_trial_optimusdrp',
           name: 'Clínica MediFlux & CardioVida (Trial 7 Dias)',
           unit: 'Unidade Prime (Ambiente de Teste Ativo)',
@@ -355,10 +367,9 @@ export async function seedFirestoreDatabase(): Promise<void> {
       for (const item of INITIAL_TEST_USERS) {
         const normalizedEmail = item.user.email.toLowerCase().trim();
         const userDocId = normalizedEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const userRef = doc(db, 'users', userDocId);
-        const userSnap = await getDoc(userRef);
+        const existingUser = await adminGetDocument('users', userDocId);
 
-        if (!userSnap.exists()) {
+        if (!existingUser) {
           const { hash, salt } = hashPassword('cardiovida2026');
           const isTrialUser = item.user.id.includes('trial') || item.user.clinicId.includes('trial');
           const now = Date.now();
@@ -382,7 +393,7 @@ export async function seedFirestoreDatabase(): Promise<void> {
             trialStatus: isTrialUser ? 'active' : undefined,
             authSource: 'firestore',
           };
-          await setDoc(userRef, record);
+          await adminSetDocument('users', userDocId, record as unknown as Record<string, unknown>);
         }
       }
 

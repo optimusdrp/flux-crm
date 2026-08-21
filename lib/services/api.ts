@@ -28,6 +28,7 @@ export const apiService = {
   async login(email: string, password?: string) {
     return authFetch<{
       token: string;
+      firebaseToken: string | null;
       user: User;
       clinic: Clinic;
       subscription: Subscription;
@@ -60,6 +61,7 @@ export const apiService = {
   }) {
     return authFetch<{
       token: string;
+      firebaseToken: string | null;
       user: User;
       clinic: Clinic;
       subscription: Subscription;

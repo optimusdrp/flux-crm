@@ -3,6 +3,7 @@ import { getDatabase } from '@/lib/db/store';
 import { signToken } from '@/lib/security/jwt';
 import { User, Clinic, Subscription, RolePermission } from '@/lib/types';
 import { registerTrialFirestoreUser } from '@/lib/db/firestore';
+import { createFirebaseCustomToken } from '@/lib/security/firebaseAdmin';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,6 +140,11 @@ export async function POST(req: NextRequest) {
       name: newUser.name,
     });
 
+    // 6.1 Integração de Firebase Authentication (correção de auditoria
+    // #4) — ver o mesmo passo em app/api/auth/login/route.ts para a
+    // explicação completa.
+    const firebaseToken = await createFirebaseCustomToken(newUser.id, newClinicId);
+
     // 7. Auditoria LGPD
     db.auditLogs.unshift({
       id: `aud_trial_${timestamp}`,
@@ -154,6 +160,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       token,
+      firebaseToken,
       user: newUser,
       clinic: newClinic,
       subscription: newSubscription,
