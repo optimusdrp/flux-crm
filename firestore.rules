@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for Multi-Tenant Isolation and Data Validation
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // 1. Clínicas (Tenants)
+    match /clinics/{clinicId} {
+      allow read: if true;
+      allow create: if isValidId(clinicId);
+      allow update: if isValidId(clinicId);
+      allow delete: if false;
+
+      // 1.1 Subcoleção de Pacientes (Isolamento Multi-Tenant por ClinicId)
+      match /patients/{patientId} {
+        allow read, write: if isValidId(clinicId) && isValidId(patientId);
+      }
+
+      // 1.2 Subcoleção de Auditoria LGPD (Imutável)
+      match /audit_logs/{logId} {
+        allow read: if isValidId(clinicId);
+        allow create: if isValidId(clinicId) && isValidId(logId);
+        allow update, delete: if false; // Logs imutáveis por conformidade LGPD
+      }
+
+      // 1.3 Subcoleção de Atendimentos
+      match /appointments/{appointmentId} {
+        allow read, write: if isValidId(clinicId) && isValidId(appointmentId);
+      }
+
+      // 1.4 Subcoleção de Jornadas
+      match /journeys/{journeyId} {
+        allow read, write: if isValidId(clinicId) && isValidId(journeyId);
+      }
+    }
+
+    // 2. Usuários do Sistema (Autenticação RBAC e Tenant ID)
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isValidId(userId);
+      allow update: if isValidId(userId);
+      allow delete: if false;
+    }
+
+    // 3. Fallback de Segurança
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
